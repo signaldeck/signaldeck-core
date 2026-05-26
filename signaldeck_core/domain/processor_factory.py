@@ -34,8 +34,7 @@ def build_processors(
             continue
 
         cls = class_from_name(p["class"])
-        inst = cls(p["name"], p["config"], value_provider, collect_data).withClassName(p["class"])
-        inst.init(ctx)
+        inst = cls(p["name"], p["config"], ctx,value_provider, collect_data).withClassName(p["class"])
         inst.registerCommands(cmd)
 
         if isinstance(inst, PersistData):

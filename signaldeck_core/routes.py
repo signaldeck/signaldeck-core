@@ -110,11 +110,11 @@ def register_routes(app: Flask) -> None:
             additional_parameters="&redirect=home",
         )
 
-    @app.route("/http/<string:name>", methods=["GET"])
+    @app.route("/http/<string:name>", methods=["GET","POST"])
     def get_http(name: str):
         houseManager = app.extensions["signaldeck.manager"]
 
-        data = houseManager.valueProvider.getHttp(name)
+        data = houseManager.valueProvider.getHttp(name, **request.values.to_dict())
         if not data:
             abort(404, description=f"Element '{name}' not found")
         return jsonify(data)

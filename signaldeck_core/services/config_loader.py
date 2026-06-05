@@ -40,4 +40,13 @@ class ConfigLoader:
     def load(self, path: str) -> AppConfig:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+            processors_from_include=[]
+            for processor in data.get("processors", []):
+                if "include" in processor:
+                    included_path = processor["include"]
+                    with open(included_path, "r", encoding="utf-8") as inc_f:
+                        included_data = json.load(inc_f)
+                        processors_from_include.extend(included_data)
+            processor_names = set(p["name"] for p in data.get("processors", []) if "include" not in p)
+            data["processors"] = [p for p in data.get("processors", []) if "include" not in p] + [p for p in processors_from_include if p["name"] not in processor_names]
         return AppConfig(raw=data)

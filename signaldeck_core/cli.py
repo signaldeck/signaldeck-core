@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+
 from signaldeck_core.app_factory import create_app
+from signaldeck_core.services import server_runner
 from .render_config import render_processor_config
 
 def _load_raw_config(path: str) -> dict[str, Any]:
@@ -56,7 +58,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     debug = args.debug
     if not debug:
         debug = os.environ.get("SIGNALDECK_DEBUG_AUTO_RELOAD","False").lower() == "true"
-    app.run(host=args.host, port=args.port, debug=debug)
+    server_runner = app.extensions["signaldeck.server_runner"]
+
+    server_runner.run(
+    app,
+    host=args.host,
+    port=args.port,
+    debug=debug,
+    )
     return 0
 
 

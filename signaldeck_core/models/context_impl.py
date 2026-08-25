@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from flask import render_template, url_for
 from werkzeug.utils import secure_filename
 
-from signaldeck_sdk import ApplicationContext
+from signaldeck_sdk import ApplicationContext, ValueProvider
 from signaldeck_sdk.context import Renderer, FileService, UrlResolver
 from .translator import TranslatorImpl
 
@@ -79,7 +79,7 @@ class LocalFileService(FileService):
 
 def build_application_context(
     *,
-    values,  # your ValueProvider instance
+    values: ValueProvider,  # your ValueProvider instance
     logger: logging.Logger,
     lang: str = 'en',
     lang_fallback: str = 'en'

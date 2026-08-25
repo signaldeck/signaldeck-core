@@ -11,7 +11,7 @@ from .models.manager import Manager
 
 from signaldeck_core.logging_setup import setup_logging
 from signaldeck_core.routes import register_routes, install_shutdown_handlers
-
+from signaldeck_core.services.server_runner import ServerRunner
 
 class RfApp(Flask):
     def __init__(self, name: str, **kwargs):
@@ -33,6 +33,7 @@ def create_app(
 
     # 2) app
     app = RfApp(__name__, static_folder=None)
+    app.extensions["signaldeck.server_runner"] = ServerRunner()
     extra_template_dirs = extra_template_dirs or []
     if extra_template_dirs:
         app.jinja_loader = ChoiceLoader([

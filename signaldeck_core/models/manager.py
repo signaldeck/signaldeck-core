@@ -1,6 +1,7 @@
 # signaldeck_core/manager.py
 import logging
 import asyncio
+from pathlib import Path
 
 from signaldeck_sdk import ValueProvider, Cmd
 from ..services.asyncio_runtime import AsyncioRuntime
@@ -10,6 +11,7 @@ from ..services.scheduler_service import SchedulerService
 from ..services.ui_asset_service import UiAssetService, UiAssets
 from ..services.action_dispatcher import ActionDispatcher
 from ..services.message_bus import InMemoryMessageBus
+from ..services.script_repository import FileScriptRepository
 
 from ..domain.processor_factory import build_datastores, build_processors
 from ..domain.group_factory import build_groups
@@ -43,9 +45,17 @@ class Manager:
         self.valueProvider = ValueProvider()
         self.valueProvider.loop = self.runtime.loop
 
-        self.cmd = Cmd(self.runtime.loop)
+        scripts_path = Path(cfg.scripts_path)
+        if not scripts_path.is_absolute():
+            scripts_path = Path(self.config_path).resolve().parent / scripts_path
+        self.script_repository = FileScriptRepository(scripts_path)
+
+        self.cmd = Cmd(self.runtime.loop, script_repository=self.script_repository)
         self.cmd.registerCmd(WaitForValue(self.valueProvider))
+        # Keep existing inline scripts working. Repository scripts are loaded afterwards
+        # and therefore take precedence when the same script exists in both places.
         self.cmd.registerScripts(cfg.cmd_config.get("script", []))
+        self.cmd.loadScripts()
         self.cmd.registerAliase(cfg.cmd_config.get("alias", []))
 
         # DataStores

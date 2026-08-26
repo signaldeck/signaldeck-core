@@ -55,6 +55,41 @@ Entwicklung:
 signaldeck run --config config.json [--host 0.0.0.0] [--port 5000] [--debug] [--no-collect-data]
 ```
 
+## Script repository
+
+Scripts can be stored as individual JSON files in a configurable directory:
+
+```json
+{
+  "cmd": {
+    "scripts_path": "scripts"
+  }
+}
+```
+
+Relative paths are resolved relative to the main configuration file. If `scripts_path` is omitted, `scripts` is used.
+Existing inline definitions under `cmd.script` remain supported; file-based scripts with the same name take precedence.
+
+A script file is named `<script-name>.json` and contains the matching script name:
+
+```json
+{
+  "name": "example",
+  "variables": [
+    {
+      "name": "delay",
+      "type": "float",
+      "default": 5
+    }
+  ],
+  "commands": [
+    "echo Start",
+    "sleep $delay",
+    "echo Finished"
+  ]
+}
+```
+
 ## Validate
 ```
 signaldeck validate-config --config config/haus_demo.json

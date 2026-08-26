@@ -24,6 +24,10 @@ class AppConfig:
         return self.raw.get("cmd", {})
 
     @property
+    def scripts_path(self) -> str:
+        return self.cmd_config.get("scripts_path", "scripts")
+
+    @property
     def data_stores(self) -> list[dict]:
         return self.raw.get("data_stores", [])
 

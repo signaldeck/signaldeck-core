@@ -30,7 +30,8 @@ class InMemoryMessageBus:
         # kein Lock gehalten werden muss.
         with self._lock:
             listeners = tuple(self._listeners)
-
+        self._logger.info(
+            "Publishing message from '%s' to %d listeners.", message.source, len(listeners))
         for listener in listeners:
             try:
                 listener(message)

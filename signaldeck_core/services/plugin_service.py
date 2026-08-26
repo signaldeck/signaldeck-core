@@ -18,7 +18,7 @@ class PluginService:
             plugin_mod_name = f"{plugin_name}.plugin"
             try:
                 plugin_mod = importlib.import_module(plugin_mod_name)
-                plugin_mod.register(app)
+                plugin_mod.register(app,ctx)
             except ModuleNotFoundError as e:
                 raise RuntimeError(
                     f"Plugin '{plugin_name}' must provide '{plugin_mod_name}' (plugin.py) "

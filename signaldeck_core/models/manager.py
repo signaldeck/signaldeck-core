@@ -9,6 +9,7 @@ from ..services.plugin_service import PluginService
 from ..services.scheduler_service import SchedulerService
 from ..services.ui_asset_service import UiAssetService, UiAssets
 from ..services.action_dispatcher import ActionDispatcher
+from ..services.message_bus import InMemoryMessageBus
 
 from ..domain.processor_factory import build_datastores, build_processors
 from ..domain.group_factory import build_groups
@@ -50,10 +51,14 @@ class Manager:
         # DataStores
         self.dataStore = build_datastores(self.runtime.loop, cfg.data_stores)
 
+        # Message bus
+        self.message_bus = InMemoryMessageBus(self.logger)
+
         # Context (includes translator)
         self.ctx = build_application_context(
             values=self.valueProvider,
             logger=self.logger,
+            message_bus=self.message_bus,
             lang=cfg.i18n_lang,
             lang_fallback=cfg.i18n_fallback,
         )
@@ -85,11 +90,13 @@ class Manager:
                 self.hashes[hash_val] = action
                 self.groupFromHash[hash_val] = group
 
-        # Start asyncio tasks
-        self._start_tasks()
+
 
         # Register plugins (blueprints + i18n packages)
         self.plugin_service.register_plugins(app, self.processor, self.ctx)
+
+        # Start asyncio tasks
+        self._start_tasks()
 
     def _start_tasks(self):
         coros = []

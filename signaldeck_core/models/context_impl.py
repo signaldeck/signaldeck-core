@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from flask import render_template, url_for
 from werkzeug.utils import secure_filename
 
-from signaldeck_sdk import ApplicationContext, ValueProvider
+from signaldeck_sdk import ApplicationContext, ValueProvider, MessageBus
 from signaldeck_sdk.context import Renderer, FileService, UrlResolver
 from .translator import TranslatorImpl
 
@@ -81,6 +81,7 @@ def build_application_context(
     *,
     values: ValueProvider,  # your ValueProvider instance
     logger: logging.Logger,
+    message_bus: MessageBus,
     lang: str = 'en',
     lang_fallback: str = 'en'
 ) -> ApplicationContext:
@@ -100,5 +101,6 @@ def build_application_context(
         files=file_service,
         translator=transl,
         values=values,
-        logger=logger
+        logger=logger,
+        message_bus=message_bus
     )

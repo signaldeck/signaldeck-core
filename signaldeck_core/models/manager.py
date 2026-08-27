@@ -19,6 +19,7 @@ from ..domain.group_factory import build_groups
 from .context_impl import build_application_context
 
 from ..commands.wait_for_value import WaitForValue
+from ..commands.value_condition import ValueConditionCommand
 
 
 class Manager:
@@ -63,6 +64,7 @@ class Manager:
             alias_repository=self.alias_repository,
         )
         self.cmd.registerCmd(WaitForValue(self.valueProvider))
+        self.cmd.registerCmd(ValueConditionCommand(self.valueProvider))
 
         # Inline definitions remain supported as migration input. Persisted definitions
         # are loaded afterwards and therefore win on name collisions.
@@ -155,7 +157,7 @@ class Manager:
         return self.path.get(p, [])
 
     def getJsAndCssFilesForGroups(self, groups) -> UiAssets:
-        return self.ui_assets.get_js_css_for_groups(groups)
+        return self.ui_assets.get_js_css_files_for_groups(groups)
 
     def getTitleForPath(self, p):
         if p == "/":

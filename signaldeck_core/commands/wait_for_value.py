@@ -7,7 +7,7 @@ class WaitForValue(Command):
         self.vP=vP
         self.sleep=sleep
         self.logger= logging.getLogger("waitForValue")
-        super().__init__("waitFor","Waits for condition")
+        super().__init__("waitFor","Waits for condition. Usage: waitFor <fieldName> <operator> <value>. Operators: =,>,>=,<,<=. FieldName is the fieldName in ValueProvider")
 
     def matches(self,curVal, operator, targetValue):
         if curVal is None:

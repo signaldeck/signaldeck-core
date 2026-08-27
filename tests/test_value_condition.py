@@ -2,8 +2,8 @@ import asyncio
 import unittest
 
 from signaldeck_core.commands.compare_condition import CompareConditionCommand
+from signaldeck_core.commands.compare_value_condition import CompareValueConditionCommand
 from signaldeck_core.commands.value_comparison import compare_values
-from signaldeck_core.commands.value_condition import CompareValueConditionCommand
 
 
 class ValueProviderStub:
@@ -30,6 +30,7 @@ class ValueConditionCommandTest(unittest.TestCase):
         async def run_test():
             condition = CompareConditionCommand()
 
+            self.assertEqual(condition.name, "compare")
             self.assertTrue(await condition.evaluate("10", "<", "20"))
             self.assertTrue(await condition.evaluate("charging", "==", "charging"))
             self.assertFalse(await condition.evaluate("10", ">=", "20"))

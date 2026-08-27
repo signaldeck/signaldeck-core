@@ -19,7 +19,8 @@ from ..domain.group_factory import build_groups
 from .context_impl import build_application_context
 
 from ..commands.wait_for_value import WaitForValue
-from ..commands.value_condition import ValueConditionCommand
+from ..commands.compare_condition import CompareConditionCommand
+from ..commands.value_condition import CompareValueConditionCommand
 
 
 class Manager:
@@ -64,7 +65,8 @@ class Manager:
             alias_repository=self.alias_repository,
         )
         self.cmd.registerCmd(WaitForValue(self.valueProvider))
-        self.cmd.registerCmd(ValueConditionCommand(self.valueProvider))
+        self.cmd.registerCmd(CompareConditionCommand())
+        self.cmd.registerCmd(CompareValueConditionCommand(self.valueProvider))
 
         # Inline definitions remain supported as migration input. Persisted definitions
         # are loaded afterwards and therefore win on name collisions.

@@ -157,7 +157,7 @@ class Manager:
         return self.path.get(p, [])
 
     def getJsAndCssFilesForGroups(self, groups) -> UiAssets:
-        return self.ui_assets.get_js_css_files_for_groups(groups)
+        return self.ui_assets.get_js_css_for_groups(groups)
 
     def getTitleForPath(self, p):
         if p == "/":

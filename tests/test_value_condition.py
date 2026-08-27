@@ -1,8 +1,9 @@
 import asyncio
 import unittest
 
+from signaldeck_core.commands.compare_condition import CompareConditionCommand
 from signaldeck_core.commands.value_comparison import compare_values
-from signaldeck_core.commands.value_condition import ValueConditionCommand
+from signaldeck_core.commands.value_condition import CompareValueConditionCommand
 
 
 class ValueProviderStub:
@@ -25,11 +26,22 @@ class ValueConditionCommandTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires numeric values"):
             compare_values("charging", ">", "idle")
 
-    def test_value_condition_reads_current_value_provider_value(self):
+    def test_compare_condition_compares_resolved_values(self):
+        async def run_test():
+            condition = CompareConditionCommand()
+
+            self.assertTrue(await condition.evaluate("10", "<", "20"))
+            self.assertTrue(await condition.evaluate("charging", "==", "charging"))
+            self.assertFalse(await condition.evaluate("10", ">=", "20"))
+
+        asyncio.run(run_test())
+
+    def test_compare_value_condition_reads_current_value_provider_value(self):
         async def run_test():
             values = ValueProviderStub({"battery_soc": 81})
-            condition = ValueConditionCommand(values)
+            condition = CompareValueConditionCommand(values)
 
+            self.assertEqual(condition.name, "compare_value")
             self.assertTrue(
                 await condition.evaluate("battery_soc", ">=", "80")
             )

@@ -5,12 +5,12 @@ from signaldeck_sdk import ConditionCommand, ValueProvider
 from .value_comparison import compare_values
 
 
-class ValueConditionCommand(ConditionCommand):
+class CompareValueConditionCommand(ConditionCommand):
     def __init__(self, value_provider: ValueProvider):
         self.value_provider = value_provider
         super().__init__(
-            "value",
-            "Compares a ValueProvider value. Usage: value <fieldName> <operator> <value>. "
+            "compare_value",
+            "Compares a ValueProvider value. Usage: compare_value <fieldName> <operator> <value>. "
             "Operators: =, ==, !=, >, >=, <, <=",
         )
 

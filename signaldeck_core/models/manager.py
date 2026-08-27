@@ -20,7 +20,7 @@ from .context_impl import build_application_context
 
 from ..commands.wait_for_value import WaitForValue
 from ..commands.compare_condition import CompareConditionCommand
-from ..commands.value_condition import CompareValueConditionCommand
+from ..commands.compare_value_condition import CompareValueConditionCommand
 
 
 class Manager:

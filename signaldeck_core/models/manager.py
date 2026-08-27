@@ -12,12 +12,13 @@ from ..services.ui_asset_service import UiAssetService, UiAssets
 from ..services.action_dispatcher import ActionDispatcher
 from ..services.message_bus import InMemoryMessageBus
 from ..services.script_repository import FileScriptRepository
+from ..services.alias_repository import FileAliasRepository
 
 from ..domain.processor_factory import build_datastores, build_processors
 from ..domain.group_factory import build_groups
 from .context_impl import build_application_context
 
-from ..commands.wait_for_value import WaitForValue  # or keep WaitForValue here; best: move to cmd module
+from ..commands.wait_for_value import WaitForValue
 
 
 class Manager:
@@ -41,30 +42,39 @@ class Manager:
 
         self.pageTitle = cfg.page_title
 
-        # ValueProvider + Cmd
         self.valueProvider = ValueProvider()
         self.valueProvider.loop = self.runtime.loop
 
+        config_dir = Path(self.config_path).resolve().parent
+
         scripts_path = Path(cfg.scripts_path)
         if not scripts_path.is_absolute():
-            scripts_path = Path(self.config_path).resolve().parent / scripts_path
+            scripts_path = config_dir / scripts_path
         self.script_repository = FileScriptRepository(scripts_path)
 
-        self.cmd = Cmd(self.runtime.loop, script_repository=self.script_repository)
+        aliases_path = Path(cfg.aliases_path)
+        if not aliases_path.is_absolute():
+            aliases_path = config_dir / aliases_path
+        self.alias_repository = FileAliasRepository(aliases_path)
+
+        self.cmd = Cmd(
+            self.runtime.loop,
+            script_repository=self.script_repository,
+            alias_repository=self.alias_repository,
+        )
         self.cmd.registerCmd(WaitForValue(self.valueProvider))
-        # Keep existing inline scripts working. Repository scripts are loaded afterwards
-        # and therefore take precedence when the same script exists in both places.
+
+        # Inline definitions remain supported as migration input. Persisted definitions
+        # are loaded afterwards and therefore win on name collisions.
         self.cmd.registerScripts(cfg.cmd_config.get("script", []))
         self.cmd.loadScripts()
         self.cmd.registerAliase(cfg.cmd_config.get("alias", []))
+        self.cmd.loadAliases()
 
-        # DataStores
         self.dataStore = build_datastores(self.runtime.loop, cfg.data_stores)
 
-        # Message bus
         self.message_bus = InMemoryMessageBus(self.logger)
 
-        # Context (includes translator)
         self.ctx = build_application_context(
             values=self.valueProvider,
             logger=self.logger,
@@ -73,7 +83,6 @@ class Manager:
             lang_fallback=cfg.i18n_fallback,
         )
 
-        # Processors
         self.processor = build_processors(
             cfg.processors,
             ctx=self.ctx,
@@ -84,10 +93,8 @@ class Manager:
             collect_data=self.collect_data,
         )
 
-        # Groups
         self.groups = build_groups(cfg.groups)
 
-        # Build indices (hashes, paths)
         self.hashes = {}
         self.groupFromHash = {}
         self.path = {}
@@ -100,12 +107,8 @@ class Manager:
                 self.hashes[hash_val] = action
                 self.groupFromHash[hash_val] = group
 
-
-
-        # Register plugins (blueprints + i18n packages)
         self.plugin_service.register_plugins(app, self.processor, self.ctx)
 
-        # Start asyncio tasks
         self._start_tasks()
 
     def _start_tasks(self):
@@ -113,7 +116,6 @@ class Manager:
         for p in self.processor.values():
             coros.extend(p.get_asyncio_tasks(self.collect_data))
 
-        # ensure tasks have .__name__? (some are functions)
         for c in coros:
             try:
                 self.logger.info(f"Scheduling task: {c.__name__}")
@@ -121,8 +123,6 @@ class Manager:
                 self.logger.info("Scheduling task (unnamed coroutine)")
 
         self.runtime.schedule_coroutines(coros)
-
-    # ---- Delegations / API ----
 
     def shutdown(self):
         self.logger.info(f"Shutdown {len(self.processor)} processors")
@@ -137,7 +137,13 @@ class Manager:
         self._load_and_init(app)
 
     def sendHash(self, hashVal, params=None, file=None):
-        return self.dispatcher.send_hash(self.processor, self.hashes, hashVal, params=params, file=file)
+        return self.dispatcher.send_hash(
+            self.processor,
+            self.hashes,
+            hashVal,
+            params=params,
+            file=file,
+        )
 
     def getCronsForActions(self, actions):
         return self.scheduler.get_crons_for_actions(actions)

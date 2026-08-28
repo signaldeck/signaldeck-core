@@ -3,6 +3,7 @@ import unittest
 
 from signaldeck_core.commands.compare_condition import CompareConditionCommand
 from signaldeck_core.commands.compare_value_condition import CompareValueConditionCommand
+from signaldeck_core.commands.get_value_command import GetValueCommand
 from signaldeck_core.commands.value_comparison import compare_values
 
 
@@ -49,6 +50,24 @@ class ValueConditionCommandTest(unittest.TestCase):
             values.values["battery_soc"] = 79
             self.assertFalse(
                 await condition.evaluate("battery_soc", ">=", "80")
+            )
+
+        asyncio.run(run_test())
+
+    def test_get_value_command_returns_current_value_provider_value(self):
+        async def run_test():
+            values = ValueProviderStub({"battery_soc": 81})
+            command = GetValueCommand(values)
+
+            self.assertEqual(command.name, "get_value")
+            self.assertEqual(
+                await command.get_value("battery_soc"),
+                81,
+            )
+            values.values["battery_soc"] = 79
+            self.assertEqual(
+                await command.get_value("battery_soc"),
+                79,
             )
 
         asyncio.run(run_test())

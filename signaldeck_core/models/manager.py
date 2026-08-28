@@ -21,6 +21,7 @@ from .context_impl import build_application_context
 from ..commands.wait_for_value import WaitForValue
 from ..commands.compare_condition import CompareConditionCommand
 from ..commands.compare_value_condition import CompareValueConditionCommand
+from ..commands.get_value_command import GetValueCommand
 
 
 class Manager:
@@ -67,6 +68,7 @@ class Manager:
         self.cmd.registerCmd(WaitForValue(self.valueProvider))
         self.cmd.registerCmd(CompareConditionCommand())
         self.cmd.registerCmd(CompareValueConditionCommand(self.valueProvider))
+        self.cmd.registerCmd(GetValueCommand(self.valueProvider))
 
         # Inline definitions remain supported as migration input. Persisted definitions
         # are loaded afterwards and therefore win on name collisions.

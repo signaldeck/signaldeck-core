@@ -11,16 +11,17 @@ class UiAssets:
 class UiAssetService:
     """
     Aggregates JS/CSS assets needed for a given set of groups.
+    The first-seen order matters because scripts can depend on earlier scripts.
     """
     def get_js_css_for_groups(self, groups: List[Group]) -> UiAssets:
-        jsRes = set()
-        cssRes = set()
+        jsRes: dict[str, None] = {}
+        cssRes: dict[str, None] = {}
         for g in groups:
             for a in g.actions:
                 jsFiles,cssFiles = a.processor.getAdditionalJsAndCssFiles(a.value)
                 for js in jsFiles:
-                    jsRes.add(js)
+                    jsRes[js] = None
                 for css in cssFiles:
-                    cssRes.add(css)
+                    cssRes[css] = None
 
         return UiAssets(js=list(jsRes), css=list(cssRes))

@@ -11,7 +11,6 @@ from contextlib import contextmanager
 import os
 import sqlite3
 import threading
-import time
 import uuid
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -363,6 +362,8 @@ class CentralCmd(Cmd):
             raise ValueError("Unknown script")
         if overlap_policy not in ("skip", "allow"):
             raise ValueError("Invalid overlap policy")
+        if variables is None:
+            variables = {}
         if not isinstance(variables, dict):
             raise ValueError("Schedule variables must be an object")
         script = self.getScript(script_name)

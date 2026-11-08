@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from signaldeck_sdk import ScriptDefinition, ScriptRepository
@@ -42,6 +44,19 @@ class FileScriptRepository(ScriptRepository):
 
     def save(self, script: ScriptDefinition) -> None:
         path = self._path_for(script.name)
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(script.to_dict(), f, ensure_ascii=False, indent=2)
-            f.write("\n")
+        # Readers in another Gunicorn worker must never observe partial JSON.
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent,
+                prefix=f".{path.name}.", suffix=".tmp", delete=False,
+            ) as handle:
+                temp_path = Path(handle.name)
+                json.dump(script.to_dict(), handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)

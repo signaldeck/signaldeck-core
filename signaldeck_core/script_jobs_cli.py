@@ -21,7 +21,7 @@ def main(argv=None) -> int:
         job_id = store.enqueue_schedule(args.schedule_id)
         print(job_id)
         return 0
-    except (ValueError, OSError, Exception):
+    except Exception:
         logging.exception("Could not enqueue scheduled script")
         return 1
 

@@ -13,10 +13,10 @@ import sqlite3
 import threading
 import time
 import uuid
+from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 from signaldeck_sdk import Cmd
 
@@ -36,6 +36,27 @@ def script_db_path(config_path: str) -> Path:
 
 
 @dataclass
+class SavedCmdResult:
+    state: list
+    variables: dict
+    finished: bool = False
+
+    def isFinished(self):
+        return self.finished
+
+
+class QueuedScriptFuture(Future):
+    def __init__(self, store, run_id):
+        super().__init__()
+        self._store = store
+        self._run_id = run_id
+
+    def cancel(self):
+        self._store.cancel(self._run_id)
+        return super().cancel()
+
+
+@dataclass
 class RunSnapshot:
     run_id: str
     script_name: str
@@ -45,6 +66,7 @@ class RunSnapshot:
     result: SimpleNamespace
     secret_variable_names: frozenset[str]
     origin: str = "manual"
+    future: Future | None = None
 
 
 def _date(value):
@@ -254,7 +276,8 @@ class ScriptJobStore:
             run_id=row["run_id"], script_name=row["script_name"],
             status=row["status"], started_at=_date(row["started_at"]),
             finished_at=_date(row["finished_at"]),
-            result=SimpleNamespace(state=states, variables=json.loads(row["variables"])),
+            result=SavedCmdResult(state=states, variables=json.loads(row["variables"]),
+                                  finished=row["status"] not in ("pending", "running", "stopping")),
             secret_variable_names=frozenset(json.loads(row["secret_names"])),
             origin=row["origin"],
         )
@@ -273,6 +296,7 @@ class CentralCmd(Cmd):
         self._runner_thread = None
         self._leader_file = None
         self._active = {}
+        self._subscribers = {}
 
     def getScript(self, name):
         # Scripts saved by a different Gunicorn worker must be visible immediately.
@@ -295,10 +319,14 @@ class CentralCmd(Cmd):
         secret_names = {v.name for v in script.variables if v.type == "secret"}
         rid = self.store.enqueue(scriptName, variables=variables,
                                  secret_names=secret_names)
-        return self.store.get_run(rid)
+        future = QueuedScriptFuture(self.store, rid)
+        self._subscribers[rid] = future
+        snapshot = self.store.get_run(rid)
+        snapshot.future = future
+        return snapshot
 
     def runScript(self, scriptName, **variables):
-        return self.startScript(scriptName, **variables)
+        return self.startScript(scriptName, **variables).future
 
     def getScriptRuns(self, scriptName, *, include_finished=True):
         return self.store.list_runs(scriptName, include_finished=include_finished)
@@ -414,12 +442,31 @@ class CentralCmd(Cmd):
                         self.store.interrupt_running()
                 if leader:
                     self._poll()
+                self._poll_subscribers()
             except Exception:
                 LOG.exception("Central Script Runner iteration failed")
             self._stop_runner.wait(0.4)
         if leader:
             # Mark local runs as interrupted before another worker takes over.
             self.store.interrupt_running()
+
+    def _poll_subscribers(self):
+        for run_id, future in list(self._subscribers.items()):
+            if future.done():
+                self._subscribers.pop(run_id, None)
+                continue
+            run = self.store.get_run(run_id)
+            if run is None:
+                continue
+            if run.status == "completed":
+                future.set_result(run.result)
+            elif run.status == "failed":
+                future.set_exception(RuntimeError(f"Script run {run_id} failed"))
+            elif run.status in ("stopped", "skipped"):
+                future.cancel()
+            else:
+                continue
+            self._subscribers.pop(run_id, None)
 
     @staticmethod
     def _states(run):

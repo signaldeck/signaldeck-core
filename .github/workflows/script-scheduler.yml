@@ -1,0 +1,23 @@
+name: Central script runner tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - feature/dynamic-script-schedules
+
+jobs:
+  script-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install framework dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "signaldeck-sdk @ git+https://github.com/signaldeck/signaldeck-sdk.git@bb28b15528feb69552d15300da91e7a2d9975a49" "signaldeck-ui @ git+https://github.com/signaldeck/signaldeck-ui.git@v1.1.beta.1"
+          python -m pip install -e .
+      - name: Test multi-worker queue and schedules
+        run: python -m unittest discover -s tests -p 'test_central_script_runner.py' -v

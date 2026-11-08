@@ -208,8 +208,12 @@ class ScriptJobStore:
 
     def update(self, run_id: str, *, status: str, state=None, finished=False,
                secret_names=None):
-        parts = ["status=?"]
-        values = [status]
+        # Another worker may request a stop between our cancellation read and
+        # this write. Keep its request visible until the local task terminates.
+        parts = ["""status=CASE
+            WHEN stop_requested=1 AND ? IN ('pending', 'running', 'stopping')
+            THEN 'stopping' ELSE ? END"""]
+        values = [status, status]
         if state is not None:
             parts.append("state=?")
             values.append(json.dumps(state, ensure_ascii=False))
@@ -252,7 +256,7 @@ class ScriptJobStore:
     def cancellations(self) -> set[str]:
         with self.connection() as db:
             rows = db.execute("""SELECT run_id FROM script_jobs
-                WHERE stop_requested=1 AND status='stopping'""").fetchall()
+                WHERE stop_requested=1 AND status IN ('running', 'stopping')""").fetchall()
         return {row["run_id"] for row in rows}
 
     def interrupt_running(self):
@@ -413,12 +417,10 @@ class CentralCmd(Cmd):
         if self._runner_thread:
             self._runner_thread.join(timeout=10)
             if self._runner_thread.is_alive():
-                LOG.warning("Central script runner did not stop; retain leadership lock")
-                return
-        if self._leader_file:
-            self._unlock()
-            self._leader_file.close()
-            self._leader_file = None
+                # Do not release the OS lock from another thread: running
+                # scripts must quiesce before a replacement leader takes over.
+                LOG.warning("Central script runner still draining active runs; "
+                            "retaining leadership until they finish")
 
     def _try_leadership(self):
         if self._leader_file is None:
@@ -449,28 +451,62 @@ class CentralCmd(Cmd):
 
     def _run_runner(self):
         leader = False
-        while not self._stop_runner.is_set():
-            try:
-                if not leader:
-                    leader = self._try_leadership()
+        try:
+            while not self._stop_runner.is_set():
+                try:
+                    if not leader:
+                        leader = self._try_leadership()
+                        if leader:
+                            LOG.info("This worker is the central Script Runner")
+                            self.store.interrupt_running()
+                            reconcile = getattr(self.scheduler, "reconcile_script_schedules", None)
+                            if callable(reconcile):
+                                try:
+                                    reconcile(self.store, config_path=self.config_path)
+                                except Exception:
+                                    LOG.exception("Cannot reconcile stored cron schedules")
                     if leader:
-                        LOG.info("This worker is the central Script Runner")
-                        self.store.interrupt_running()
-                        reconcile = getattr(self.scheduler, "reconcile_script_schedules", None)
-                        if callable(reconcile):
-                            try:
-                                reconcile(self.store, config_path=self.config_path)
-                            except Exception:
-                                LOG.exception("Cannot reconcile stored cron schedules")
+                        self._poll()
+                    self._poll_subscribers()
+                except Exception:
+                    LOG.exception("Central Script Runner iteration failed")
+                self._stop_runner.wait(0.4)
+        finally:
+            # The runner thread owns leadership for the complete duration of
+            # any active invocation, including asynchronous cancellation cleanup.
+            # If draining fails, intentionally retain the OS lock until process
+            # termination instead of permitting concurrent old/new runners.
+            try:
                 if leader:
-                    self._poll()
-                self._poll_subscribers()
+                    self._drain_active()
+                    self.store.interrupt_running()
+                    self._unlock()
+                if self._leader_file:
+                    self._leader_file.close()
+                    self._leader_file = None
             except Exception:
-                LOG.exception("Central Script Runner iteration failed")
-            self._stop_runner.wait(0.4)
-        if leader:
-            # Mark local runs as interrupted before another worker takes over.
-            self.store.interrupt_running()
+                LOG.exception("Runner shutdown failed; retaining leadership lock")
+
+    def _drain_active(self):
+        """Request cancellation and await real coroutine completion before unlock."""
+        import time
+
+        for run in self._active.values():
+            if not run.future.done():
+                super().stopRun(run.run_id)
+
+        while self._active:
+            for external_id, run in list(self._active.items()):
+                if not run.future.done():
+                    continue
+                self.store.update(
+                    external_id, status=run.status, state=self._states(run),
+                    finished=True,
+                )
+                self.store.prune_history(run.script_name)
+                self._active.pop(external_id)
+            if self._active:
+                time.sleep(0.05)
 
     def _poll_subscribers(self):
         for run_id, future in list(self._subscribers.items()):

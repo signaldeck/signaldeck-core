@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import contextmanager
 import os
 import sqlite3
 import threading
@@ -27,7 +28,11 @@ def utcnow():
 
 
 def script_db_path(config_path: str) -> Path:
-    return Path(config_path).resolve().parent / "script_jobs.sqlite"
+    config = Path(config_path).resolve()
+    with config.open("r", encoding="utf-8") as handle:
+        jobs_db = json.load(handle).get("cmd", {}).get("jobs_db", "script_jobs.sqlite")
+    path = Path(jobs_db)
+    return path if path.is_absolute() else config.parent / path
 
 
 @dataclass
@@ -74,11 +79,21 @@ class ScriptJobStore:
         except OSError:
             pass
 
+    @contextmanager
     def connection(self):
         db = sqlite3.connect(self.path, timeout=15.0)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA busy_timeout=15000")
-        return db
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    def list_all_schedules(self) -> list[dict]:
+        with self.connection() as db:
+            rows = db.execute("SELECT * FROM script_schedules ORDER BY id").fetchall()
+        return [self._schedule(row) for row in rows]
 
     def list_schedules(self, script_name: str) -> list[dict]:
         with self.connection() as db:
@@ -123,6 +138,8 @@ class ScriptJobStore:
                 schedule_id=None, overlap_policy="allow",
                 secret_names=()) -> str:
         run_id = uuid.uuid4().hex
+        if len(json.dumps(variables or {})) > 16384:
+            raise ValueError("Script variables exceed 16 KiB")
         with self.connection() as db:
             db.execute("""INSERT INTO script_jobs
                 (run_id, script_name, status, requested_at, variables,
@@ -310,8 +327,11 @@ class CentralCmd(Cmd):
         script = self.getScript(script_name)
         if any(v.type == "secret" and v.name in variables for v in script.variables):
             raise ValueError("Do not store secret variables in cron schedules")
-        schedule_id = schedule_id or uuid.uuid4().hex
+        generated_id = uuid.uuid4().hex if not schedule_id else None
+        schedule_id = schedule_id or generated_id
         old = self.store.schedule(schedule_id)
+        if old is None and schedule_id != generated_id:
+            raise ValueError("Cannot overwrite an unknown schedule")
         if old and old["script_name"] != script_name:
             raise ValueError("Schedule belongs to another script")
         schedule = dict(id=schedule_id, script_name=script_name, cron=cron,
@@ -347,7 +367,10 @@ class CentralCmd(Cmd):
     def shutdown_runner(self):
         self._stop_runner.set()
         if self._runner_thread:
-            self._runner_thread.join(timeout=3)
+            self._runner_thread.join(timeout=10)
+            if self._runner_thread.is_alive():
+                LOG.warning("Central script runner did not stop; retain leadership lock")
+                return
         if self._leader_file:
             self._unlock()
             self._leader_file.close()

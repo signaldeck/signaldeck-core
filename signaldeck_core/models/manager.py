@@ -3,7 +3,8 @@ import logging
 import asyncio
 from pathlib import Path
 
-from signaldeck_sdk import ValueProvider, Cmd
+from signaldeck_sdk import ValueProvider
+from ..services.central_script_runner import CentralCmd
 from ..services.asyncio_runtime import AsyncioRuntime
 from ..services.config_loader import ConfigLoader
 from ..services.plugin_service import PluginService
@@ -60,8 +61,10 @@ class Manager:
             aliases_path = config_dir / aliases_path
         self.alias_repository = FileAliasRepository(aliases_path)
 
-        self.cmd = Cmd(
+        self.cmd = CentralCmd(
             self.runtime.loop,
+            config_path=self.config_path,
+            scheduler=self.scheduler,
             script_repository=self.script_repository,
             alias_repository=self.alias_repository,
         )
@@ -116,6 +119,7 @@ class Manager:
         self.plugin_service.register_plugins(app, self.processor, self.ctx)
 
         self._start_tasks()
+        self.cmd.start_runner()
 
     def _start_tasks(self):
         coros = []
@@ -131,6 +135,7 @@ class Manager:
         self.runtime.schedule_coroutines(coros)
 
     def shutdown(self):
+        self.cmd.shutdown_runner()
         self.logger.info(f"Shutdown {len(self.processor)} processors")
         for name, p in self.processor.items():
             self.logger.info(f"Shutdown {name}")

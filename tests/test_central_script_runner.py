@@ -151,6 +151,80 @@ class CentralScriptRunnerTests(unittest.TestCase):
                 leader._leader_file.close()
                 follower._leader_file.close()
 
+    def test_stop_all_cancels_more_than_fifty_pending_runs(self):
+        scheduler = FakeScheduler()
+        cmd = CentralCmd(self.loop, config_path=self.config_path,
+                         scheduler=scheduler, script_repository=None,
+                         alias_repository=None)
+        cmd.registerScript({"name": "bulk", "commands": ["echo test"]})
+        job_ids = [cmd.store.enqueue("bulk") for _ in range(75)]
+        # UI history remains deliberately limited; stop(name) must not be.
+        self.assertEqual(len(cmd.getScriptRuns("bulk", include_finished=False)), 50)
+        cmd.stop("bulk")
+        self.assertTrue(all(cmd.store.get_run(job_id).status == "stopped"
+                            for job_id in job_ids))
+
+    def test_concurrent_schedule_updates_preserve_both_cron_entries(self):
+        """Two concurrent writers cannot overwrite each other's crontab."""
+        from signaldeck_core.services import scheduler_service
+        from threading import Event, Thread
+
+        state = {"text": ""}
+        first_writer_started = Event()
+        release_first_writer = Event()
+        second_writer_finished = Event()
+        count = [0]
+        original_crontab = CronTab
+
+        def fake_crontab(*args, **kwargs):
+            assert kwargs.get("user") is True
+            count[0] += 1
+            index = count[0]
+            cron = original_crontab(tab=state["text"])
+
+            def save(*, user=True):
+                if index == 1:
+                    first_writer_started.set()
+                    if not release_first_writer.wait(timeout=3):
+                        raise TimeoutError("First writer never released")
+                state["text"] = str(cron)
+
+            cron.write_to_user = save
+            return cron
+
+        service = SchedulerService()
+        errors = []
+        def save_schedule(schedule_id):
+            try:
+                service.set_script_schedule(
+                    {"id": schedule_id, "cron": "0 7 * * *", "enabled": True},
+                    config_path=self.config_path,
+                )
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                if schedule_id == "b" * 32:
+                    second_writer_finished.set()
+
+        with patch.object(scheduler_service, "CronTab", side_effect=fake_crontab):
+            first = Thread(target=save_schedule, args=("a" * 32,))
+            second = Thread(target=save_schedule, args=("b" * 32,))
+            first.start()
+            try:
+                self.assertTrue(first_writer_started.wait(timeout=3))
+                second.start()
+                self.assertFalse(second_writer_finished.wait(timeout=0.15))
+            finally:
+                release_first_writer.set()
+                first.join(timeout=3)
+                if second.ident is not None:
+                    second.join(timeout=3)
+        self.assertFalse(errors, errors)
+        self.assertEqual(count[0], 2)
+        written = original_crontab(tab=state["text"])
+        self.assertEqual(len(list(written.find_comment("signaldeck-script:" + "a" * 32))), 1)
+        self.assertEqual(len(list(written.find_comment("signaldeck-script:" + "b" * 32))), 1)
+
     def test_disabled_schedule_cannot_be_enqueued(self):
         store = ScriptJobStore(self.db_path)
         store.put_schedule({

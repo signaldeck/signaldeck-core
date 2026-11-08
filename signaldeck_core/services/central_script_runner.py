@@ -225,6 +225,15 @@ class ScriptJobStore:
             db.execute("UPDATE script_jobs SET " + ", ".join(parts) +
                        " WHERE run_id=?", values)
 
+    def prune_history(self, script_name: str, keep: int = 200):
+        with self.connection() as db:
+            db.execute("""DELETE FROM script_jobs WHERE run_id IN (
+                SELECT run_id FROM script_jobs
+                WHERE script_name=? AND status NOT IN ('pending', 'running', 'stopping')
+                ORDER BY requested_at DESC, rowid DESC
+                LIMIT -1 OFFSET ?
+            )""", (script_name, keep))
+
     def cancel(self, run_id: str) -> bool:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -316,6 +325,10 @@ class CentralCmd(Cmd):
         script = self.getScript(scriptName)
         if script is None:
             raise ValueError(f"Unknown script: {scriptName}")
+        variables = dict(variables)
+        for variable in script.variables:
+            if variable.name not in variables and variable.default is not None:
+                variables[variable.name] = variable.default
         secret_names = {v.name for v in script.variables if v.type == "secret"}
         rid = self.store.enqueue(scriptName, variables=variables,
                                  secret_names=secret_names)
@@ -440,6 +453,12 @@ class CentralCmd(Cmd):
                     if leader:
                         LOG.info("This worker is the central Script Runner")
                         self.store.interrupt_running()
+                        reconcile = getattr(self.scheduler, "reconcile_script_schedules", None)
+                        if callable(reconcile):
+                            try:
+                                reconcile(self.store, config_path=self.config_path)
+                            except Exception:
+                                LOG.exception("Cannot reconcile stored cron schedules")
                 if leader:
                     self._poll()
                 self._poll_subscribers()
@@ -486,6 +505,7 @@ class CentralCmd(Cmd):
             self.store.update(external_id, status=status, state=self._states(run),
                               finished=finished)
             if finished:
+                self.store.prune_history(run.script_name)
                 self._active.pop(external_id, None)
 
         # Start at most one new queued job per iteration to maintain

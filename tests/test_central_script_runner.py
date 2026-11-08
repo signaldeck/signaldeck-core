@@ -5,6 +5,10 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from crontab import CronTab
+from signaldeck_core.services.scheduler_service import SchedulerService
 
 from signaldeck_core.services.central_script_runner import (
     CentralCmd, ScriptJobStore, script_db_path,
@@ -56,6 +60,28 @@ class CentralScriptRunnerTests(unittest.TestCase):
         self.assertEqual(second.schedule("test-id"), schedule)
         rid = second.enqueue_schedule("test-id")
         self.assertEqual(first.get_run(rid).status, "pending")
+
+    def test_scheduler_writes_local_cli_cron_command(self):
+        memory_cron = CronTab(tab="")
+        schedule = {
+            "id": "0123456789abcdef0123456789abcdef",
+            "script_name": "hello", "cron": "0 7 * * *",
+            "enabled": True, "variables": {}, "overlap_policy": "skip",
+        }
+        service = SchedulerService()
+        with patch("signaldeck_core.services.scheduler_service.CronTab",
+                   return_value=memory_cron), patch.object(memory_cron, "write_to_user"):
+            service.set_script_schedule(schedule, config_path=self.config_path)
+            jobs = list(memory_cron.find_comment("signaldeck-script:" + schedule["id"]))
+            self.assertEqual(len(jobs), 1)
+            self.assertIn("signaldeck_core.script_jobs_cli", jobs[0].command)
+            self.assertIn("--schedule-id", jobs[0].command)
+            self.assertNotIn("/run", jobs[0].command)
+            schedule["enabled"] = False
+            service.set_script_schedule(schedule, config_path=self.config_path)
+            self.assertEqual(
+                list(memory_cron.find_comment("signaldeck-script:" + schedule["id"])),
+                [])
 
     def test_disabled_schedule_cannot_be_enqueued(self):
         store = ScriptJobStore(self.db_path)

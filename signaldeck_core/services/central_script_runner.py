@@ -253,6 +253,23 @@ class ScriptJobStore:
                     status='stopping' WHERE run_id=?""", (run_id,))
         return True
 
+    def cancel_script(self, script_name: str) -> None:
+        """Stop every nonterminal run, without the UI's 50-row history limit.
+
+        A single SQLite write transaction prevents the leader from claiming
+        pending jobs in between cancellation of individual runs.
+        """
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            now = utcnow()
+            db.execute("""UPDATE script_jobs
+                SET status='stopped', stop_requested=1, finished_at=?
+                WHERE script_name=? AND status='pending'""", (now, script_name))
+            db.execute("""UPDATE script_jobs
+                SET status='stopping', stop_requested=1
+                WHERE script_name=? AND status IN ('running', 'stopping')""",
+                (script_name,))
+
     def cancellations(self) -> set[str]:
         with self.connection() as db:
             rows = db.execute("""SELECT run_id FROM script_jobs
@@ -354,8 +371,9 @@ class CentralCmd(Cmd):
         return self.store.cancel(run_id)
 
     def stop(self, name):
-        for run in self.getScriptRuns(name, include_finished=False):
-            self.stopRun(run.run_id)
+        # The run history API intentionally returns only the newest 50 rows;
+        # bulk cancellation must not use that paginated view.
+        self.store.cancel_script(name)
         # Retain stop() support for Cmd.run() tasks started directly by plugins.
         super().stop(name)
 

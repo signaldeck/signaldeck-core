@@ -4,6 +4,8 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import Future
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -82,6 +84,72 @@ class CentralScriptRunnerTests(unittest.TestCase):
             self.assertEqual(
                 list(memory_cron.find_comment("signaldeck-script:" + schedule["id"])),
                 [])
+
+    def test_stop_request_survives_stale_running_status_update(self):
+        store = ScriptJobStore(self.db_path)
+        run_id = store.enqueue("hello")
+        store.claim()
+        self.assertTrue(store.cancel(run_id))
+        # The runner still holds a snapshot from before the stop request.
+        store.update(run_id, status="running", state=[])
+        self.assertEqual(store.get_run(run_id).status, "stopping")
+        self.assertIn(run_id, store.cancellations())
+        # After the actual future has stopped, the final state is terminal.
+        store.update(run_id, status="stopped", finished=True)
+        self.assertEqual(store.get_run(run_id).status, "stopped")
+
+    def test_runner_drain_waits_for_real_execution_before_handover(self):
+        from unittest.mock import patch
+        from signaldeck_sdk import Cmd
+
+        scheduler = FakeScheduler()
+        leader = CentralCmd(self.loop, config_path=self.config_path,
+                            scheduler=scheduler, script_repository=None,
+                            alias_repository=None)
+        follower = CentralCmd(self.loop, config_path=self.config_path,
+                              scheduler=scheduler, script_repository=None,
+                              alias_repository=None)
+        self.assertTrue(leader._try_leadership())
+        job_id = leader.store.enqueue("hello")
+        leader.store.claim()
+
+        future = Future()
+        run = SimpleNamespace(
+            run_id="local-job", script_name="hello", future=future,
+            status="running", result=SimpleNamespace(state=[]),
+        )
+        leader._active[job_id] = run
+        cancel_seen = threading.Event()
+        drain_done = threading.Event()
+
+        def cancel_run(_cmd, run_id):
+            self.assertEqual(run_id, "local-job")
+            cancel_seen.set()
+
+        def drain():
+            try:
+                leader._drain_active()
+            finally:
+                drain_done.set()
+
+        with patch.object(Cmd, "stopRun", cancel_run):
+            thread = threading.Thread(target=drain, daemon=True)
+            thread.start()
+            try:
+                self.assertTrue(cancel_seen.wait(timeout=2))
+                self.assertFalse(drain_done.wait(timeout=0.15))
+                self.assertFalse(follower._try_leadership())
+                run.status = "stopped"
+                future.set_result(None)
+                self.assertTrue(drain_done.wait(timeout=2))
+                # Leadership has not been released by draining itself.
+                self.assertFalse(follower._try_leadership())
+            finally:
+                future.cancel()
+                thread.join(timeout=2)
+                leader._unlock()
+                leader._leader_file.close()
+                follower._leader_file.close()
 
     def test_disabled_schedule_cannot_be_enqueued(self):
         store = ScriptJobStore(self.db_path)

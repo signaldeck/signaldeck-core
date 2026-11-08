@@ -49,3 +49,53 @@ class SchedulerService:
 
         self.logger.info(f"Set crontab for action {action_hash}: {crondef}")
         cron.write_to_user(user=True)
+
+    # Script schedules do not use view ActionHashes. A cron invocation writes a
+    # durable queue entry; it never needs access to the HTTP server or its auth.
+    @staticmethod
+    def _schedule_comment(schedule_id: str) -> str:
+        import uuid
+        if uuid.UUID(schedule_id).hex != schedule_id:
+            raise ValueError("Expected canonical hexadecimal schedule ID")
+        return f"signaldeck-script:{schedule_id}"
+
+    def set_script_schedule(self, schedule: dict, *, config_path: str) -> None:
+        import shlex
+        import sys
+        from pathlib import Path
+
+        marker = self._schedule_comment(schedule["id"])
+        expression = str(schedule["cron"]).strip()
+        if len(expression.split()) != 5:
+            raise ValueError("Cron schedule must contain five fields")
+        cron = CronTab(user=True)
+        command = " ".join(shlex.quote(part) for part in (
+            sys.executable, "-m", "signaldeck_core.script_jobs_cli",
+            "--config", str(Path(config_path).resolve()),
+            "--schedule-id", schedule["id"],
+        ))
+        job = cron.new(command=command, comment=marker)
+        try:
+            job.setall(expression)
+            if not job.is_valid():
+                raise ValueError("Invalid cron expression")
+        except Exception as exc:
+            raise ValueError(f"Invalid cron expression: {expression}") from exc
+        # Preserve all unrelated jobs, including legacy ActionHash cronjobs.
+        cron.remove_all(comment=marker)
+        if schedule["enabled"]:
+            cron.new(command=command, comment=marker).setall(expression)
+        cron.write_to_user(user=True)
+
+    def remove_script_schedule(self, schedule_id: str) -> None:
+        marker = self._schedule_comment(schedule_id)
+        cron = CronTab(user=True)
+        cron.remove_all(comment=marker)
+        cron.write_to_user(user=True)
+
+    def reconcile_script_schedules(self, store, *, config_path: str) -> None:
+        """Restore saved schedules after OS crontab replacement if needed."""
+        # Reconciliation is explicit. Normal startup must not rewrite the
+        # crontab in every Gunicorn worker.
+        for schedule in store.list_all_schedules():
+            self.set_script_schedule(schedule, config_path=config_path)

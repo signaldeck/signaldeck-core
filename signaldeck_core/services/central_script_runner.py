@@ -352,6 +352,8 @@ class CentralCmd(Cmd):
     def stop(self, name):
         for run in self.getScriptRuns(name, include_finished=False):
             self.stopRun(run.run_id)
+        # Retain stop() support for Cmd.run() tasks started directly by plugins.
+        super().stop(name)
 
     def listScriptSchedules(self, script_name):
         return self.store.list_schedules(script_name)
@@ -493,8 +495,11 @@ class CentralCmd(Cmd):
         result = []
         for item in run.result.state[-40:]:
             dt = item.get("date")
-            result.append({"date": dt.isoformat() if hasattr(dt, "isoformat") else None,
-                           "msg": str(item.get("msg", ""))})
+            record = {"date": dt.isoformat() if hasattr(dt, "isoformat") else None,
+                      "msg": str(item.get("msg", ""))}
+            if "command" in item:
+                record["command"] = str(item["command"])
+            result.append(record)
         return result
 
     def _poll(self):

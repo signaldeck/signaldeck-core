@@ -93,6 +93,32 @@ class CentralScriptRunnerTests(unittest.TestCase):
             for worker in workers:
                 worker.shutdown_runner()
 
+    def test_queued_jobs_survive_runner_handover(self):
+        scheduler = FakeScheduler()
+        first = CentralCmd(self.loop, config_path=self.config_path,
+                           scheduler=scheduler, script_repository=None, alias_repository=None)
+        second = CentralCmd(self.loop, config_path=self.config_path,
+                            scheduler=scheduler, script_repository=None, alias_repository=None)
+        for worker in (first, second):
+            worker.registerScript({"name": "hello", "commands": ["echo takeover"]})
+        first.start_runner()
+        try:
+            # First worker has time to acquire the file lock.
+            time.sleep(0.7)
+            second.start_runner()
+            first.shutdown_runner()
+            queued = second.startScript("hello")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                run = second.getScriptRun(queued.run_id)
+                if run.status in ("completed", "failed", "stopped"):
+                    break
+                time.sleep(0.1)
+            self.assertEqual(run.status, "completed")
+        finally:
+            first.shutdown_runner()
+            second.shutdown_runner()
+
     def test_schedules_are_per_script_and_reject_secret_variables(self):
         scheduler = FakeScheduler()
         cmd = CentralCmd(self.loop, config_path=self.config_path,

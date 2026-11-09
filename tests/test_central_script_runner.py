@@ -1,10 +1,12 @@
 import asyncio
+from contextlib import contextmanager
 import json
 import tempfile
 import threading
 import time
 import unittest
 from concurrent.futures import Future
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
@@ -20,6 +22,12 @@ from signaldeck_core.services.central_script_runner import (
 class FakeScheduler:
     def __init__(self):
         self.schedules = {}
+        self._lock = threading.RLock()
+
+    @contextmanager
+    def schedule_transaction(self):
+        with self._lock:
+            yield self
 
     def set_script_schedule(self, schedule, *, config_path):
         if len(schedule["cron"].split()) != 5:
@@ -224,6 +232,87 @@ class CentralScriptRunnerTests(unittest.TestCase):
         written = original_crontab(tab=state["text"])
         self.assertEqual(len(list(written.find_comment("signaldeck-script:" + "a" * 32))), 1)
         self.assertEqual(len(list(written.find_comment("signaldeck-script:" + "b" * 32))), 1)
+
+    def test_long_running_completion_is_not_immediately_pruned(self):
+        store = ScriptJobStore(self.db_path)
+        long_running_id = store.enqueue("hello")
+        store.claim()
+        # Many newer requests finish before the oldest running job completes.
+        for _ in range(220):
+            run_id = store.enqueue("hello")
+            job = store.claim()
+            self.assertEqual(job["run_id"], run_id)
+            store.update(run_id, status="completed", finished=True)
+        store.update(long_running_id, status="completed", finished=True)
+        store.prune_history("hello", keep=200)
+        self.assertIsNotNone(store.get_run(long_running_id))
+
+    def test_subscriber_missing_result_finishes_with_error(self):
+        worker = CentralCmd(self.loop, config_path=self.config_path,
+                            scheduler=FakeScheduler(), script_repository=None,
+                            alias_repository=None)
+        missing_id = "missing"
+        future = Future()
+        worker._subscribers[missing_id] = future
+        worker._poll_subscribers()
+        self.assertTrue(future.done())
+        with self.assertRaisesRegex(RuntimeError, "no longer exists"):
+            future.result()
+        self.assertNotIn(missing_id, worker._subscribers)
+
+    def test_schedule_persistence_and_crontab_share_one_lock(self):
+        class BlockingScheduler(FakeScheduler):
+            def __init__(self):
+                super().__init__()
+                self.first_cron_written = threading.Event()
+                self.allow_first_persist = threading.Event()
+                self.first = None
+
+            def set_script_schedule(self, schedule, *, config_path):
+                super().set_script_schedule(schedule, config_path=config_path)
+                if schedule["cron"] == "0 1 * * *":
+                    self.first_cron_written.set()
+                    if not self.allow_first_persist.wait(timeout=3):
+                        raise TimeoutError("Concurrent schedule test failed")
+
+        scheduler = BlockingScheduler()
+        first = CentralCmd(self.loop, config_path=self.config_path,
+                           scheduler=scheduler, script_repository=None,
+                           alias_repository=None)
+        second = CentralCmd(self.loop, config_path=self.config_path,
+                            scheduler=scheduler, script_repository=None,
+                            alias_repository=None)
+        for worker in (first, second):
+            worker.registerScript({"name": "hello", "commands": ["echo hello"]})
+        existing = first.saveScriptSchedule("hello", "0 7 * * *")
+        schedule_id = existing["id"]
+        errors = []
+        second_done = threading.Event()
+
+        def save(worker, cron):
+            try:
+                worker.saveScriptSchedule("hello", cron, schedule_id=schedule_id)
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                if cron == "0 2 * * *":
+                    second_done.set()
+
+        a = threading.Thread(target=save, args=(first, "0 1 * * *"))
+        b = threading.Thread(target=save, args=(second, "0 2 * * *"))
+        a.start()
+        try:
+            self.assertTrue(scheduler.first_cron_written.wait(timeout=3))
+            b.start()
+            self.assertFalse(second_done.wait(timeout=0.15))
+        finally:
+            scheduler.allow_first_persist.set()
+            a.join(timeout=3)
+            if b.ident is not None:
+                b.join(timeout=3)
+        self.assertFalse(errors, errors)
+        self.assertEqual(first.store.schedule(schedule_id)["cron"], "0 2 * * *")
+        self.assertEqual(scheduler.schedules[schedule_id]["cron"], "0 2 * * *")
 
     def test_disabled_schedule_cannot_be_enqueued(self):
         store = ScriptJobStore(self.db_path)

@@ -323,6 +323,69 @@ class CentralScriptRunnerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             store.enqueue_schedule("disabled")
 
+    def test_shutdown_settles_finished_and_queued_subscribers(self):
+        cmd = CentralCmd(self.loop, config_path=self.config_path,
+                         scheduler=FakeScheduler(), script_repository=None,
+                         alias_repository=None)
+        completed_id = cmd.store.enqueue("test")
+        cmd.store.claim()
+        cmd.store.update(completed_id, status="completed", finished=True)
+        pending_id = cmd.store.enqueue("test")
+        finished_future = Future()
+        waiting_future = Future()
+        cmd._subscribers[completed_id] = finished_future
+        cmd._subscribers[pending_id] = waiting_future
+
+        # A non-leader worker can be reinitialized while another worker
+        # is responsible for the pending execution.
+        cmd.shutdown_runner()
+        self.assertTrue(finished_future.done())
+        self.assertTrue(finished_future.result().isFinished())
+        self.assertTrue(waiting_future.done())
+        with self.assertRaisesRegex(RuntimeError, "shut down"):
+            waiting_future.result()
+        self.assertEqual(cmd.store.get_run(pending_id).status, "pending")
+        self.assertEqual(cmd._subscribers, {})
+
+    def test_runner_shutdown_drains_and_settles_active_subscriber(self):
+        from unittest.mock import patch
+        from signaldeck_sdk import Cmd
+        cmd = CentralCmd(self.loop, config_path=self.config_path,
+                         scheduler=FakeScheduler(), script_repository=None,
+                         alias_repository=None)
+        run_id = cmd.store.enqueue("test")
+        cmd.store.claim()
+        local_future = Future()
+        local_run = SimpleNamespace(
+            run_id="local", script_name="test", future=local_future,
+            status="running", result=SimpleNamespace(state=[]),
+        )
+        cmd._active[run_id] = local_run
+        subscriber = Future()
+        cmd._subscribers[run_id] = subscriber
+
+        def stop_local(_cmd, local_id):
+            self.assertEqual(local_id, "local")
+            local_run.status = "stopped"
+            local_future.set_result(None)
+
+        with patch.object(Cmd, "stopRun", stop_local):
+            cmd._drain_active()
+            cmd._settle_shutdown_subscribers()
+        self.assertTrue(subscriber.done())
+        self.assertTrue(subscriber.cancelled())
+        self.assertEqual(cmd._subscribers, {})
+
+    def test_shutting_down_rejects_new_subscribers(self):
+        cmd = CentralCmd(self.loop, config_path=self.config_path,
+                         scheduler=FakeScheduler(), script_repository=None,
+                         alias_repository=None)
+        cmd.registerScript({"name": "test", "commands": ["echo test"]})
+        cmd.shutdown_runner()
+        with self.assertRaisesRegex(RuntimeError, "shutting down"):
+            cmd.runScript("test")
+        self.assertEqual(cmd.store.list_runs("test"), [])
+
     def test_only_one_leader_executes_shared_job(self):
         scheduler = FakeScheduler()
         workers = [

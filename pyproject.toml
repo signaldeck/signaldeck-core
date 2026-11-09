@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "signaldeck-core"
-version = "0.6.1"
+version = "0.6.2"
 description = "SignalDeck core runtime"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
   "flask>=3.0",
-  "signaldeck-sdk>=0.6.0",
+  "signaldeck-sdk>=0.6.3",
   "signaldeck-ui>=0.6.0",
   "python-crontab>=3.3.0"
 ]

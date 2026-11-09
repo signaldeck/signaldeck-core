@@ -14,7 +14,7 @@ import threading
 import uuid
 from concurrent.futures import Future
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from signaldeck_sdk import Cmd
@@ -229,13 +229,17 @@ class ScriptJobStore:
                        " WHERE run_id=?", values)
 
     def prune_history(self, script_name: str, keep: int = 200):
+        # Keep the newest *completed* executions, regardless of when they
+        # started. Every terminal result also gets a grace period so a
+        # requesting worker has time to resolve its queued Future.
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         with self.connection() as db:
             db.execute("""DELETE FROM script_jobs WHERE run_id IN (
                 SELECT run_id FROM script_jobs
                 WHERE script_name=? AND status NOT IN ('pending', 'running', 'stopping')
-                ORDER BY requested_at DESC, rowid DESC
+                ORDER BY finished_at DESC, rowid DESC
                 LIMIT -1 OFFSET ?
-            )""", (script_name, keep))
+            ) AND finished_at < ?""", (script_name, keep, cutoff))
 
     def cancel(self, run_id: str) -> bool:
         with self.connection() as db:
@@ -395,33 +399,40 @@ class CentralCmd(Cmd):
             raise ValueError("Do not store secret variables in cron schedules")
         generated_id = uuid.uuid4().hex if not schedule_id else None
         schedule_id = schedule_id or generated_id
-        old = self.store.schedule(schedule_id)
-        if old is None and schedule_id != generated_id:
-            raise ValueError("Cannot overwrite an unknown schedule")
-        if old and old["script_name"] != script_name:
-            raise ValueError("Schedule belongs to another script")
-        schedule = dict(id=schedule_id, script_name=script_name, cron=cron,
-                        enabled=bool(enabled), variables=variables,
-                        overlap_policy=overlap_policy)
-        # Validate and install before updating the DB, so invalid cron
-        # expressions cannot replace a previously working schedule.
-        self.scheduler.set_script_schedule(schedule, config_path=self.config_path)
-        try:
-            self.store.put_schedule(schedule)
-        except Exception:
-            if old:
-                self.scheduler.set_script_schedule(old, config_path=self.config_path)
-            else:
-                self.scheduler.remove_script_schedule(schedule_id)
-            raise
-        return schedule
+        # The crontab operation and SQLite persistence must have a single
+        # cross-process critical section. Otherwise concurrent workers can
+        # commit schedule definitions in an order differing from cron writes.
+        with self.scheduler.schedule_transaction() as editor:
+            old = self.store.schedule(schedule_id)
+            if old is None and schedule_id != generated_id:
+                raise ValueError("Cannot overwrite an unknown schedule")
+            if old and old["script_name"] != script_name:
+                raise ValueError("Schedule belongs to another script")
+            schedule = dict(id=schedule_id, script_name=script_name, cron=cron,
+                            enabled=bool(enabled), variables=variables,
+                            overlap_policy=overlap_policy)
+            editor.set_script_schedule(schedule, config_path=self.config_path)
+            try:
+                self.store.put_schedule(schedule)
+            except Exception:
+                if old:
+                    editor.set_script_schedule(old, config_path=self.config_path)
+                else:
+                    editor.remove_script_schedule(schedule_id)
+                raise
+            return schedule
 
     def deleteScriptSchedule(self, script_name, schedule_id):
-        old = self.store.schedule(schedule_id)
-        if old is None or old["script_name"] != script_name:
-            raise ValueError("Unknown schedule for script")
-        self.scheduler.remove_script_schedule(schedule_id)
-        self.store.remove_schedule(schedule_id)
+        with self.scheduler.schedule_transaction() as editor:
+            old = self.store.schedule(schedule_id)
+            if old is None or old["script_name"] != script_name:
+                raise ValueError("Unknown schedule for script")
+            editor.remove_script_schedule(schedule_id)
+            try:
+                self.store.remove_schedule(schedule_id)
+            except Exception:
+                editor.set_script_schedule(old, config_path=self.config_path)
+                raise
 
     def start_runner(self):
         if self._runner_thread is not None:
@@ -533,6 +544,10 @@ class CentralCmd(Cmd):
                 continue
             run = self.store.get_run(run_id)
             if run is None:
+                future.set_exception(
+                    RuntimeError(f"Script run {run_id} result no longer exists")
+                )
+                self._subscribers.pop(run_id, None)
                 continue
             if run.status == "completed":
                 future.set_result(run.result)

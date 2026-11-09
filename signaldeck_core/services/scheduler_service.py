@@ -48,6 +48,19 @@ def _crontab_lock():
     finally:
         os.close(fd)
 
+class _LockedScriptScheduleEditor:
+    """Only usable while SchedulerService.schedule_transaction holds the OS lock."""
+
+    def __init__(self, service):
+        self._service = service
+
+    def set_script_schedule(self, schedule: dict, *, config_path: str) -> None:
+        self._service._write_script_schedule(schedule, config_path=config_path)
+
+    def remove_script_schedule(self, schedule_id: str) -> None:
+        self._service._delete_script_schedule(schedule_id)
+
+
 class SchedulerService:
     def __init__(self, logger: logging.Logger | None = None) -> None:
         self.logger = logger or logging.getLogger(__name__)
@@ -106,45 +119,60 @@ class SchedulerService:
             raise ValueError("Expected canonical hexadecimal schedule ID")
         return f"signaldeck-script:{schedule_id}"
 
-    def set_script_schedule(self, schedule: dict, *, config_path: str) -> None:
-        with _crontab_lock():
-            import shlex
-            import sys
-            from pathlib import Path
+    @contextmanager
+    def schedule_transaction(self):
+        """Protect a schedule's SQLite read/write and crontab update together.
 
-            marker = self._schedule_comment(schedule["id"])
-            expression = str(schedule["cron"]).strip()
-            if len(expression.split()) != 5:
-                raise ValueError("Cron schedule must contain five fields")
-            cron = CronTab(user=True)
-            command = " ".join(shlex.quote(part) for part in (
-                sys.executable, "-m", "signaldeck_core.script_jobs_cli",
-                "--config", str(Path(config_path).resolve()),
-                "--schedule-id", schedule["id"],
-            ))
-            job = cron.new(command=command, comment=marker)
-            try:
-                job.setall(expression)
-                if not job.is_valid():
-                    raise ValueError("Invalid cron expression")
-            except Exception as exc:
-                raise ValueError(f"Invalid cron expression: {expression}") from exc
-            # Preserve all unrelated jobs, including legacy ActionHash cronjobs.
-            cron.remove_all(comment=marker)
-            if schedule["enabled"]:
-                cron.new(command=command, comment=marker).setall(expression)
-            cron.write_to_user(user=True)
+        The editor must not outlive this context. Other cron writers (including
+        legacy action-based schedules) use the exact same per-user lock.
+        """
+        with _crontab_lock():
+            yield _LockedScriptScheduleEditor(self)
+
+    def _write_script_schedule(self, schedule: dict, *, config_path: str) -> None:
+        """Internal implementation; only called under schedule_transaction."""
+        import shlex
+        import sys
+
+        marker = self._schedule_comment(schedule["id"])
+        expression = str(schedule["cron"]).strip()
+        if len(expression.split()) != 5:
+            raise ValueError("Cron schedule must contain five fields")
+        cron = CronTab(user=True)
+        command = " ".join(shlex.quote(part) for part in (
+            sys.executable, "-m", "signaldeck_core.script_jobs_cli",
+            "--config", str(Path(config_path).resolve()),
+            "--schedule-id", schedule["id"],
+        ))
+        job = cron.new(command=command, comment=marker)
+        try:
+            job.setall(expression)
+            if not job.is_valid():
+                raise ValueError("Invalid cron expression")
+        except Exception as exc:
+            raise ValueError(f"Invalid cron expression: {expression}") from exc
+        cron.remove_all(comment=marker)
+        if schedule["enabled"]:
+            cron.new(command=command, comment=marker).setall(expression)
+        cron.write_to_user(user=True)
+
+    def _delete_script_schedule(self, schedule_id: str) -> None:
+        """Internal implementation; only called under schedule_transaction."""
+        marker = self._schedule_comment(schedule_id)
+        cron = CronTab(user=True)
+        cron.remove_all(comment=marker)
+        cron.write_to_user(user=True)
+
+    def set_script_schedule(self, schedule: dict, *, config_path: str) -> None:
+        with self.schedule_transaction() as editor:
+            editor.set_script_schedule(schedule, config_path=config_path)
 
     def remove_script_schedule(self, schedule_id: str) -> None:
-        with _crontab_lock():
-            marker = self._schedule_comment(schedule_id)
-            cron = CronTab(user=True)
-            cron.remove_all(comment=marker)
-            cron.write_to_user(user=True)
+        with self.schedule_transaction() as editor:
+            editor.remove_script_schedule(schedule_id)
 
     def reconcile_script_schedules(self, store, *, config_path: str) -> None:
-        """Restore saved schedules after OS crontab replacement if needed."""
-        # Reconciliation is explicit. Normal startup must not rewrite the
-        # crontab in every Gunicorn worker.
-        for schedule in store.list_all_schedules():
-            self.set_script_schedule(schedule, config_path=config_path)
+        """Reconcile a single consistent snapshot against the user's crontab."""
+        with self.schedule_transaction() as editor:
+            for schedule in store.list_all_schedules():
+                editor.set_script_schedule(schedule, config_path=config_path)

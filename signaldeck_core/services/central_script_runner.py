@@ -330,6 +330,7 @@ class CentralCmd(Cmd):
         self._leader_file = None
         self._active = {}
         self._subscribers = {}
+        self._subscriber_lock = threading.RLock()
 
     def getScript(self, name):
         # Scripts saved by a different Gunicorn worker must be visible immediately.
@@ -354,13 +355,18 @@ class CentralCmd(Cmd):
             if variable.name not in variables and variable.default is not None:
                 variables[variable.name] = variable.default
         secret_names = {v.name for v in script.variables if v.type == "secret"}
-        rid = self.store.enqueue(scriptName, variables=variables,
-                                 secret_names=secret_names)
-        future = QueuedScriptFuture(self.store, rid)
-        self._subscribers[rid] = future
-        snapshot = self.store.get_run(rid)
-        snapshot.future = future
-        return snapshot
+        # Shutdown may start on a different thread while a request enqueues.
+        # Publish the new subscriber atomically with the shutdown check.
+        with self._subscriber_lock:
+            if self._stop_runner.is_set():
+                raise RuntimeError("Script runner is shutting down")
+            rid = self.store.enqueue(scriptName, variables=variables,
+                                     secret_names=secret_names)
+            future = QueuedScriptFuture(self.store, rid)
+            self._subscribers[rid] = future
+            snapshot = self.store.get_run(rid)
+            snapshot.future = future
+            return snapshot
 
     def runScript(self, scriptName, **variables):
         return self.startScript(scriptName, **variables).future
@@ -446,10 +452,14 @@ class CentralCmd(Cmd):
         if self._runner_thread:
             self._runner_thread.join(timeout=10)
             if self._runner_thread.is_alive():
-                # Do not release the OS lock from another thread: running
-                # scripts must quiesce before a replacement leader takes over.
+                # Let the runner thread finish cancelling active executions
+                # while it retains the leader lock. Callers no longer have a
+                # live polling loop, so their own futures must be settled.
                 LOG.warning("Central script runner still draining active runs; "
                             "retaining leadership until they finish")
+                self._settle_shutdown_subscribers()
+        else:
+            self._settle_shutdown_subscribers()
 
     def _try_leadership(self):
         if self._leader_file is None:
@@ -509,12 +519,19 @@ class CentralCmd(Cmd):
                 if leader:
                     self._drain_active()
                     self.store.interrupt_running()
+                # Drain has now persisted terminal states. Resolve all
+                # completed/stopped calls, and fail remaining callers whose
+                # queued work can be picked up by another worker later.
+                self._settle_shutdown_subscribers()
+                if leader:
                     self._unlock()
                 if self._leader_file:
                     self._leader_file.close()
                     self._leader_file = None
             except Exception:
                 LOG.exception("Runner shutdown failed; retaining leadership lock")
+                # Never abandon caller-facing Futures even when cleanup fails.
+                self._settle_shutdown_subscribers()
 
     def _drain_active(self):
         """Request cancellation and await real coroutine completion before unlock."""
@@ -538,6 +555,11 @@ class CentralCmd(Cmd):
                 time.sleep(0.05)
 
     def _poll_subscribers(self):
+        with self._subscriber_lock:
+            self._settle_terminal_subscribers()
+
+    def _settle_terminal_subscribers(self):
+        """Called only with _subscriber_lock held."""
         for run_id, future in list(self._subscribers.items()):
             if future.done():
                 self._subscribers.pop(run_id, None)
@@ -558,6 +580,25 @@ class CentralCmd(Cmd):
             else:
                 continue
             self._subscribers.pop(run_id, None)
+
+    def _settle_shutdown_subscribers(self):
+        """Finish every old caller Future before disposing of this Cmd instance.
+
+        Incomplete queue entries remain in SQLite for the next leader. Their
+        original in-process callers receive an explicit shutdown exception,
+        rather than a Future that can never become done after reinit.
+        """
+        with self._subscriber_lock:
+            self._settle_terminal_subscribers()
+            for run_id, future in list(self._subscribers.items()):
+                if not future.done():
+                    future.set_exception(
+                        RuntimeError(
+                            f"Script runner shut down before run {run_id} finished; "
+                            "the queued job may still execute"
+                        )
+                    )
+                self._subscribers.pop(run_id, None)
 
     @staticmethod
     def _states(run):

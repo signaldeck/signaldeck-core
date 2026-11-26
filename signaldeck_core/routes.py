@@ -3,6 +3,7 @@ import signal
 import sys
 from typing import Any
 from .models.manager import Manager
+from signaldeck_sdk.value_provider import HttpRequestError
 from flask import render_template, request, jsonify, abort, redirect, Flask
 
 def merged_params() -> dict[str, Any]:
@@ -114,7 +115,18 @@ def register_routes(app: Flask) -> None:
     def get_http(name: str):
         houseManager = app.extensions["signaldeck.manager"]
 
-        data = houseManager.valueProvider.getHttp(name, **request.values.to_dict())
+        payload = request.values.to_dict()
+        if request.is_json:
+            body = request.get_json()
+            if not isinstance(body, dict):
+                abort(400, description="Expected a JSON object")
+            if payload.keys() & body.keys():
+                abort(400, description="Duplicate HTTP payload fields")
+            payload.update(body)
+        try:
+            data = houseManager.valueProvider.dispatchHttp(name, request.method, payload)
+        except HttpRequestError as exc:
+            abort(exc.status, description=str(exc))
         if not data:
             abort(404, description=f"Element '{name}' not found")
         return jsonify(data)

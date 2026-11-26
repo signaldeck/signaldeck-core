@@ -82,6 +82,7 @@ def build_application_context(
     values: ValueProvider,  # your ValueProvider instance
     logger: logging.Logger,
     message_bus: MessageBus,
+    publishers=None,
     lang: str = 'en',
     lang_fallback: str = 'en'
 ) -> ApplicationContext:
@@ -102,5 +103,6 @@ def build_application_context(
         translator=transl,
         values=values,
         logger=logger,
-        message_bus=message_bus
+        message_bus=message_bus,
+        publishers=publishers
     )

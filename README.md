@@ -106,3 +106,6 @@ signaldeck list-plugins --config config/haus_demo.json
 ```
 signaldeck get-config --processor signaldeck_plugin_main.processors.dummy_data.data.Data
 ```
+## Data exchange publishers
+
+The optional top-level `plugins` array lists Python package names to load even without a configured processor (for example `["signaldeck_plugin_main"]`). Plugins register transport factories via `ctx.publishers.register(type, factory)`. Per-processor `export.publish` entries specify name, type, interval_seconds, values (export alias mapping) and transport-specific config. Jobs start only when collect_data is enabled. Run a single collecting worker to avoid duplicate jobs. Existing HTTP exports remain available; JSON object POST bodies are now supported alongside form and query parameters.

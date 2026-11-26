@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
   "flask>=3.0",
-  "signaldeck-sdk>=0.6.3",
+  "signaldeck-sdk>=0.6.4",
   "signaldeck-ui>=0.6.0",
   "python-crontab>=3.3.0"
 ]

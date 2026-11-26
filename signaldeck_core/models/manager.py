@@ -8,6 +8,7 @@ from ..services.central_script_runner import CentralCmd
 from ..services.asyncio_runtime import AsyncioRuntime
 from ..services.config_loader import ConfigLoader
 from ..services.plugin_service import PluginService
+from ..services.publish_service import PublisherRegistry, PublishService
 from ..services.scheduler_service import SchedulerService
 from ..services.ui_asset_service import UiAssetService, UiAssets
 from ..services.action_dispatcher import ActionDispatcher
@@ -84,10 +85,12 @@ class Manager:
 
         self.message_bus = InMemoryMessageBus(self.logger)
 
+        self.publishers = PublisherRegistry()
         self.ctx = build_application_context(
             values=self.valueProvider,
             logger=self.logger,
             message_bus=self.message_bus,
+            publishers=self.publishers,
             lang=cfg.i18n_lang,
             lang_fallback=cfg.i18n_fallback,
         )
@@ -116,13 +119,14 @@ class Manager:
                 self.hashes[hash_val] = action
                 self.groupFromHash[hash_val] = group
 
-        self.plugin_service.register_plugins(app, self.processor, self.ctx)
+        self.plugin_service.register_plugins(app, self.processor, self.ctx, cfg.plugins)
+        self.publish_service = PublishService(self.valueProvider, self.publishers, self.logger)
 
         self._start_tasks()
         self.cmd.start_runner()
 
     def _start_tasks(self):
-        coros = []
+        coros = self.publish_service.tasks(self.collect_data)
         for p in self.processor.values():
             coros.extend(p.get_asyncio_tasks(self.collect_data))
 

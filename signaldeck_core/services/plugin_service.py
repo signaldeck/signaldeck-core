@@ -7,11 +7,12 @@ class PluginService:
     def __init__(self, logger: logging.Logger | None = None) -> None:
         self.logger = logger or logging.getLogger(__name__)
 
-    def register_plugins(self, app, processors: dict, ctx) -> set[str]:
+    def register_plugins(self, app, processors: dict, ctx, plugins=()) -> set[str]:
         already_handled: set[str] = set()
 
-        for _, processor in processors.items():
-            plugin_name = processor.className.split(".")[0]
+        names = [p.className.split(".")[0] for p in processors.values()]
+        names.extend(plugins)
+        for plugin_name in names:
             if plugin_name in already_handled:
                 continue
 

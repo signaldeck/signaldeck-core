@@ -17,6 +17,10 @@ class AppConfig:
         return self.raw["processors"]
 
     @property
+    def plugins(self) -> list[str]:
+        return self.raw.get("plugins", [])
+
+    @property
     def groups(self) -> list[dict]:
         return self.raw["groups"]
 
